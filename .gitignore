@@ -1,77 +1,33 @@
-## Build results
+# VS 캐시
+.vs/
+ipch/
+*.VC.db
+*.VC.opendb
+*.opendb
+
+# 빌드 산출물(폴더/파일)
 [Bb]in/
 [Oo]bj/
-[Ll]og/
-[Ll]ogs/
-*.tlog
-*.log
-
-## VS generated files
-.vs/
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
-
-## Visual Studio profiler
-*.psess
-*.vsp
-*.vspx
-*.sap
-
-## Test results
-[Tt]est[Rr]esult*/
-[Bb]uild[Ll]og.*
-
-## Ngen
-*.ni.dll
-*.ni.exe
-
-## Backup & Reports
-*_i.c
-*_p.c
-*.ilk
-*.meta
 *.obj
-*.pch
 *.pdb
-*.pgc
-*.pgd
-*.rsp
-*.sbr
-*.tlb
-*.tli
-*.tlh
-*.tmp
-*.tmp_proj
-*.log
-*.vspscc
-*_i.obj
-*_p.obj
-*.cachefile
+*.ipdb
+*.iobj
+*.ilk
+*.dll
+*.exe
+*.sys
+*.exp
 
-## Others
-*.dbmdl
-*.bak
-*.backup
-*.swp
-*.tmp
-*.vsix
-*.ncb
-*.opendb
-*.tgz
-*.tar.gz
-*.7z
-*.zip
-*.rar
-
-# Rider / JetBrains
-.idea/
-
-# Packages
+# NuGet/SDK/WDK (복원 가능)
+packages/
 *.nupkg
 *.snupkg
-*.nuspec
-packages/
-*.vsix
+
+# 로그/임시
+[Ll]og/
+[Ll]ogs/
+*.log
+*.tlog
+*.tmp
+*.cache
 
