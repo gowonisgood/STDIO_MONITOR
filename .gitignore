@@ -1,0 +1,77 @@
+## Build results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.tlog
+*.log
+
+## VS generated files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## Visual Studio profiler
+*.psess
+*.vsp
+*.vspx
+*.sap
+
+## Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+## Ngen
+*.ni.dll
+*.ni.exe
+
+## Backup & Reports
+*_i.c
+*_p.c
+*.ilk
+*.meta
+*.obj
+*.pch
+*.pdb
+*.pgc
+*.pgd
+*.rsp
+*.sbr
+*.tlb
+*.tli
+*.tlh
+*.tmp
+*.tmp_proj
+*.log
+*.vspscc
+*_i.obj
+*_p.obj
+*.cachefile
+
+## Others
+*.dbmdl
+*.bak
+*.backup
+*.swp
+*.tmp
+*.vsix
+*.ncb
+*.opendb
+*.tgz
+*.tar.gz
+*.7z
+*.zip
+*.rar
+
+# Rider / JetBrains
+.idea/
+
+# Packages
+*.nupkg
+*.snupkg
+*.nuspec
+packages/
+*.vsix
+

@@ -1,0 +1,29 @@
+﻿  Building 'minispy' with toolset 'WindowsKernelModeDriver10.0' and the 'Universal' target platform.
+  Stamping x64\Debug\minispy.inf
+  Stamping [Version] section with DriverVer=09/23/2025,20.57.11.516
+  minispy.c
+  minispy.vcxproj -> D:\GIT\minifilter\practice4_2-STDIO\Windows-driver-samples\filesys\miniFilter\minispy\filter\x64\Debug\minispy.sys
+  Done Adding Additional Store
+  Successfully signed: D:\GIT\minifilter\practice4_2-STDIO\Windows-driver-samples\filesys\miniFilter\minispy\filter\x64\Debug\minispy.sys
+  
+  Driver is 'Universal'.
+  ........................
+  Signability test complete.
+  
+  Errors:
+  None
+  
+  Warnings:
+  None
+  
+  Catalog generation complete.
+  D:\GIT\minifilter\practice4_2-STDIO\Windows-driver-samples\filesys\miniFilter\minispy\filter\x64\Debug\minispy\minispy.cat
+  Set catalog attribute.
+  WdkVersion: 10.0.26100.0
+  Set catalog attribute.
+  WdkAssemblyVersion: 10.0.26100.4202
+  Done Adding Additional Store
+  Successfully signed: x64\Debug\minispy\minispy.cat
+  
+  'pwsh.exe'은(는) 내부 또는 외부 명령, 실행할 수 있는 프로그램, 또는
+  배치 파일이 아닙니다.

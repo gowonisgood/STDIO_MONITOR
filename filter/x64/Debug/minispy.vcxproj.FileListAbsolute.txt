@@ -1,0 +1,1 @@
+D:\GIT\minifilter\practice4_2-STDIO\Windows-driver-samples\filesys\miniFilter\minispy\filter\x64\Debug\minispy.sys
