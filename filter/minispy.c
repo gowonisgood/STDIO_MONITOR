@@ -587,6 +587,96 @@ Return Value:
 //              Operation filtering routines
 //---------------------------------------------------------------------------
 
+/* GO : helper function custom */
+static __forceinline const char* MjName(UCHAR mj) {
+    static const char* N[] = {
+        "CREATE","CREATE_NAMED_PIPE","CLOSE","READ","WRITE",
+        "QUERY_INFORMATION","SET_INFORMATION","QUERY_EA","SET_EA",
+        "FLUSH_BUFFERS","QUERY_VOLUME_INFORMATION","SET_VOLUME_INFORMATION",
+        "DIRECTORY_CONTROL","FILE_SYSTEM_CONTROL","DEVICE_CONTROL",
+        "INTERNAL_DEVICE_CONTROL","SHUTDOWN","LOCK_CONTROL","CLEANUP",
+        "CREATE_MAILSLOT","QUERY_SECURITY","SET_SECURITY","POWER",
+        "SYSTEM_CONTROL","DEVICE_CHANGE","QUERY_QUOTA","SET_QUOTA","PNP"
+    };
+    return (mj < RTL_NUMBER_OF(N)) ? N[mj] : "?";
+}
+
+
+//EXTERN_C DECLSPEC_IMPORT UCHAR* PsGetProcessImageFileName(PEPROCESS Process);
+
+static __forceinline VOID LogProc(_In_ PFLT_CALLBACK_DATA Data, _In_ const char* tag)
+{
+    ULONG pid = FltGetRequestorProcessId(Data);
+    HANDLE tid = PsGetCurrentThreadId();
+    //PEPROCESS e = FltGetRequestorProcess(Data);
+    //UCHAR * img = NULL;
+    //if (e) {
+    //    UCHAR * p = PsGetProcessImageFileNameA(e); // char*
+    //    if (p && p[0]) img = p;
+    //}
+    //DbgPrint("[NPFS][%s] pid=%p tid=%p img=%s\n", tag, pid, tid, img);
+    DbgPrint("[NPFS][%s] pid=%lu tid=%p\n", tag, pid, tid);
+}
+
+static VOID LogPipeLocalInfo(_In_ PFLT_INSTANCE Instance, _In_ PFILE_OBJECT FileObject)
+{
+    FILE_PIPE_LOCAL_INFORMATION info = { 0 };
+    //IO_STATUS_BLOCK iosb = { 0 };
+    NTSTATUS st = FltQueryInformationFile(
+        Instance, FileObject,
+        &info, sizeof(info),
+        FilePipeLocalInformation, NULL
+    );
+    if (NT_SUCCESS(st)) {
+        DbgPrint("[NPFS][PIPE] Type=%lu Config=%lu InQuota=%lu OutQuota=%lu ReadAvail=%lu\n",
+            info.NamedPipeType,          // 0: byte-stream, 1: message
+            info.NamedPipeConfiguration, // 0: client end, 1: server end
+            info.InboundQuota,
+            info.OutboundQuota,
+            info.ReadDataAvailable
+        );
+    }
+}
+
+static __forceinline PVOID GetSysBufFromWrite(_Inout_ PFLT_CALLBACK_DATA Data)
+{
+    PVOID usr = Data->Iopb->Parameters.Write.WriteBuffer;
+    if (FlagOn(Data->Flags, FLTFL_CALLBACK_DATA_SYSTEM_BUFFER)) return usr;
+    if (Data->Iopb->Parameters.Write.MdlAddress)
+        return MmGetSystemAddressForMdlSafe(Data->Iopb->Parameters.Write.MdlAddress, NormalPagePriority);
+
+    // MDL 없으면 잠금 후 재시도
+    FltLockUserBuffer(Data);
+    if (Data->Iopb->Parameters.Write.MdlAddress)
+        return MmGetSystemAddressForMdlSafe(Data->Iopb->Parameters.Write.MdlAddress, NormalPagePriority);
+    return NULL;
+}
+
+static __forceinline PVOID GetSysBufFromRead(_Inout_ PFLT_CALLBACK_DATA Data)
+{
+    PVOID usr = Data->Iopb->Parameters.Read.ReadBuffer;
+    if (FlagOn(Data->Flags, FLTFL_CALLBACK_DATA_SYSTEM_BUFFER)) return usr;
+    if (Data->Iopb->Parameters.Read.MdlAddress)
+        return MmGetSystemAddressForMdlSafe(Data->Iopb->Parameters.Read.MdlAddress, NormalPagePriority);
+    return NULL; // READ는 Post에서 보통 MDL이 잡혀있음
+}
+static VOID DumpString(_In_reads_bytes_(len) const UCHAR* p, _In_ ULONG len, _In_ ULONG max)
+{
+    ULONG n = (len < max ? len : max);
+    CHAR buf[257] = { 0 };
+    ULONG j = 0;
+
+    for (ULONG i = 0; i < n && j < 256; i++) {
+        if (p[i] >= 0x20 && p[i] <= 0x7E)
+            buf[j++] = (CHAR)p[i];
+        else
+            buf[j++] = '.';
+    }
+    buf[j] = '\0';
+
+    DbgPrint("[NPFS][ASCII] %s\n", buf);
+}
+
 
 static
 BOOLEAN
@@ -614,8 +704,52 @@ SpyPreOperationCallback(
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
+    const UCHAR mj = Data->Iopb->MajorFunction;
+
+    /*if (mj == IRP_MJ_CREATE || mj == IRP_MJ_CREATE_NAMED_PIPE) {
+        LogProc(Data, MjName(mj));
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }*/
+
+    //if (mj == IRP_MJ_WRITE) {
+    //    ULONG len = Data->Iopb->Parameters.Write.Length;
+
+    //    if (len == 0 ||
+    //        FlagOn(Data->Iopb->IrpFlags, IRP_PAGING_IO) ||
+    //        Data->RequestorMode == KernelMode) {
+    //        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    //    }
+
+    //    PVOID sys = GetSysBufFromWrite(Data);
+    //    LogProc(Data, "WRITE");
+    //    if (sys && len) {
+    //        DbgPrint("[NPFS][WRITE] len=%lu first=%02X\n", len, ((PUCHAR)sys)[0]);
+    //        DumpBytess((const UCHAR*)sys, len, 256); // 과도 로그 방지로 256바이트 제한
+    //    }
+    //    return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    //}
+
+
+    if (mj == IRP_MJ_WRITE) {
+        ULONG len = Data->Iopb->Parameters.Write.Length;
+
+        // 커널 모드 요청, 페이징 I/O, 길이가 0인 요청은 무시
+        if (len == 0 ||
+            FlagOn(Data->Iopb->IrpFlags, IRP_PAGING_IO) ||
+            Data->RequestorMode == KernelMode) {
+            return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        }
+
+        // Post-Operation 콜백을 요청합니다.
+        return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+    }
+
+    /*if (mj == IRP_MJ_CLEANUP || mj == IRP_MJ_CLOSE) {
+        LogProc(Data, MjName(mj));
+    }*/
+
     // NPFS 전용 처리…
-	DbgPrint("NPFS operation detected: MajorFunction=%d\n", Data->Iopb->MajorFunction);
+	//DbgPrint("NPFS operation detected: MajorFunction=%d\n", Data->Iopb->MajorFunction);
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
 
@@ -627,131 +761,51 @@ SpyPostOperationCallback (
     _In_ PVOID CompletionContext,
     _In_ FLT_POST_OPERATION_FLAGS Flags
     )
-/*++
-
-Routine Description:
-
-    This routine receives ALL post-operation callbacks.  This will take
-    the log record passed in the context parameter and update it with
-    the completion information.  It will then insert it on a list to be
-    sent to the usermode component.
-
-    NOTE:  This routine must be NON-PAGED because it can be called at DPC level
-
-Arguments:
-
-    Data - Contains information about the given operation.
-
-    FltObjects - Contains pointers to the various objects that are pertinent
-        to this operation.
-
-    CompletionContext - Pointer to the RECORD_LIST structure in which we
-        store the information we are logging.  This was passed from the
-        pre-operation callback
-
-    Flags - Contains information as to why this routine was called.
-
-Return Value:
-
-    Identifies how processing should continue for this operation
-
---*/
 {
-    PRECORD_LIST recordList;
-    PRECORD_LIST reparseRecordList = NULL;
-    PLOG_RECORD reparseLogRecord;
-    PFLT_TAG_DATA_BUFFER tagData;
-    ULONG copyLength;
+    //UNREFERENCED_PARAMETER(FltObjects);
+    UNREFERENCED_PARAMETER(CompletionContext);
+    UNREFERENCED_PARAMETER(Flags);
 
-    UNREFERENCED_PARAMETER( FltObjects );
-
-    recordList = (PRECORD_LIST)CompletionContext;
-
-    //
-    //  If our instance is in the process of being torn down don't bother to
-    //  log this record, free it now.
-    //
-
-    if (FlagOn(Flags,FLTFL_POST_OPERATION_DRAINING)) {
-
-        SpyFreeRecord( recordList );
+    // 작업이 성공적으로 완료되었는지 확인
+    if (!NT_SUCCESS(Data->IoStatus.Status)) {
         return FLT_POSTOP_FINISHED_PROCESSING;
     }
 
-    //
-    //  Set completion information into the record
-    //
+    const UCHAR mj = Data->Iopb->MajorFunction;
 
-    SpyLogPostOperationData( Data, recordList );
+    if (mj == IRP_MJ_WRITE) {
+        ULONG writeLength = (ULONG)Data->IoStatus.Information; // 실제 쓰여진 길이
+        PVOID sysBuffer = NULL;
 
-    //
-    //  Log reparse tag information if specified.
-    //
-
-    tagData = Data->TagData;
-    if (tagData) {
-
-        reparseRecordList = SpyNewRecord();
-
-        if (reparseRecordList) {
-
-            //
-            //  only copy the DATA portion of the information
-            //
-
-            RtlCopyMemory( &reparseRecordList->LogRecord.Data,
-                           &recordList->LogRecord.Data,
-                           sizeof(RECORD_DATA) );
-
-            reparseLogRecord = &reparseRecordList->LogRecord;
-
-            copyLength = FLT_TAG_DATA_BUFFER_HEADER_SIZE + tagData->TagDataLength;
-
-            if(copyLength > MAX_NAME_SPACE) {
-
-                copyLength = MAX_NAME_SPACE;
-            }
-
-            //
-            //  Copy reparse data
-            //
-
-            RtlCopyMemory(
-                &reparseRecordList->LogRecord.Name[0],
-                tagData,
-                copyLength
-                );
-
-            reparseLogRecord->RecordType |= RECORD_TYPE_FILETAG;
-            reparseLogRecord->Length += (ULONG) ROUND_TO_SIZE( copyLength, sizeof( PVOID ) );
+        if (writeLength == 0) {
+            return FLT_POSTOP_FINISHED_PROCESSING;
         }
-    }
 
-    //
-    //  Send the logged information to the user service.
-    //
+        // Post-Op에서는 버퍼에 안전하게 접근할 수 있습니다.
+        // GetSysBufFromWrite와 같은 불안정한 함수 대신,
+        // 이미 시스템 버퍼에 있거나 MDL이 준비되어 있을 가능성이 높습니다.
 
-    SpyLog( recordList );
+        //    ULONG len = Data->Iopb->Parameters.Write.Length;
 
-    if (reparseRecordList) {
+        
 
-        SpyLog( reparseRecordList );
-    }
+        //    PVOID sys = GetSysBufFromWrite(Data);
+        //    LogProc(Data, "WRITE");
+        //    if (sys && len) {
+        //        DbgPrint("[NPFS][WRITE] len=%lu first=%02X\n", len, ((PUCHAR)sys)[0]);
+        //        DumpBytess((const UCHAR*)sys, len, 256); // 과도 로그 방지로 256바이트 제한
+        //    }
 
-    //
-    //  For creates within a transaction enlist in the transaction
-    //  if we haven't already done.
-    //
 
-    if ((FltObjects->Transaction != NULL) &&
-        (Data->Iopb->MajorFunction == IRP_MJ_CREATE) &&
-        (Data->IoStatus.Status == STATUS_SUCCESS)) {
+        sysBuffer = GetSysBufFromWrite(Data);
 
-        //
-        //  Enlist in the transaction.
-        //
-
-        SpyEnlistInTransaction( FltObjects );
+        
+        LogProc(Data, "WRITE (PostOp)");
+        if (sysBuffer && writeLength > 0) {
+            UNICODE_STRING name = FltObjects->FileObject->FileName;
+            DbgPrint("[NPFS][WRITE-POST] pipename=%wZ len=%lu first=%02X\n",name, writeLength, ((PUCHAR)sysBuffer)[0]);
+            DumpString((const UCHAR*)sysBuffer, writeLength, 256);
+        }
     }
 
     return FLT_POSTOP_FINISHED_PROCESSING;

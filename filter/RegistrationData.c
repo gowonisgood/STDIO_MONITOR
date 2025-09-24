@@ -34,9 +34,9 @@ Environment:
 #endif
 
 CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
-   { IRP_MJ_CREATE,           0, SpyPreOperationCallback, SpyPostOperationCallback },
-    { IRP_MJ_CREATE_NAMED_PIPE,0, SpyPreOperationCallback, SpyPostOperationCallback },
-    { IRP_MJ_READ,             0, SpyPreOperationCallback, SpyPostOperationCallback },
+   { IRP_MJ_CREATE,           0, SpyPreOperationCallback, 0 },
+    { IRP_MJ_CREATE_NAMED_PIPE,0, SpyPreOperationCallback, 0 },
+    { IRP_MJ_READ,             0, SpyPreOperationCallback, 0 },
     { IRP_MJ_WRITE,            0, SpyPreOperationCallback, SpyPostOperationCallback },
     { IRP_MJ_OPERATION_END }
 };
