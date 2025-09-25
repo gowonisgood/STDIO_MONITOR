@@ -588,55 +588,14 @@ Return Value:
 //---------------------------------------------------------------------------
 
 /* GO : helper function custom */
-static __forceinline const char* MjName(UCHAR mj) {
-    static const char* N[] = {
-        "CREATE","CREATE_NAMED_PIPE","CLOSE","READ","WRITE",
-        "QUERY_INFORMATION","SET_INFORMATION","QUERY_EA","SET_EA",
-        "FLUSH_BUFFERS","QUERY_VOLUME_INFORMATION","SET_VOLUME_INFORMATION",
-        "DIRECTORY_CONTROL","FILE_SYSTEM_CONTROL","DEVICE_CONTROL",
-        "INTERNAL_DEVICE_CONTROL","SHUTDOWN","LOCK_CONTROL","CLEANUP",
-        "CREATE_MAILSLOT","QUERY_SECURITY","SET_SECURITY","POWER",
-        "SYSTEM_CONTROL","DEVICE_CHANGE","QUERY_QUOTA","SET_QUOTA","PNP"
-    };
-    return (mj < RTL_NUMBER_OF(N)) ? N[mj] : "?";
-}
-
-
-//EXTERN_C DECLSPEC_IMPORT UCHAR* PsGetProcessImageFileName(PEPROCESS Process);
 
 static __forceinline VOID LogProc(_In_ PFLT_CALLBACK_DATA Data, _In_ const char* tag)
 {
     ULONG pid = FltGetRequestorProcessId(Data);
     HANDLE tid = PsGetCurrentThreadId();
-    //PEPROCESS e = FltGetRequestorProcess(Data);
-    //UCHAR * img = NULL;
-    //if (e) {
-    //    UCHAR * p = PsGetProcessImageFileNameA(e); // char*
-    //    if (p && p[0]) img = p;
-    //}
-    //DbgPrint("[NPFS][%s] pid=%p tid=%p img=%s\n", tag, pid, tid, img);
     DbgPrint("[NPFS][%s] pid=%lu tid=%p\n", tag, pid, tid);
 }
 
-static VOID LogPipeLocalInfo(_In_ PFLT_INSTANCE Instance, _In_ PFILE_OBJECT FileObject)
-{
-    FILE_PIPE_LOCAL_INFORMATION info = { 0 };
-    //IO_STATUS_BLOCK iosb = { 0 };
-    NTSTATUS st = FltQueryInformationFile(
-        Instance, FileObject,
-        &info, sizeof(info),
-        FilePipeLocalInformation, NULL
-    );
-    if (NT_SUCCESS(st)) {
-        DbgPrint("[NPFS][PIPE] Type=%lu Config=%lu InQuota=%lu OutQuota=%lu ReadAvail=%lu\n",
-            info.NamedPipeType,          // 0: byte-stream, 1: message
-            info.NamedPipeConfiguration, // 0: client end, 1: server end
-            info.InboundQuota,
-            info.OutboundQuota,
-            info.ReadDataAvailable
-        );
-    }
-}
 
 static __forceinline PVOID GetSysBufFromWrite(_Inout_ PFLT_CALLBACK_DATA Data)
 {
@@ -660,6 +619,7 @@ static __forceinline PVOID GetSysBufFromRead(_Inout_ PFLT_CALLBACK_DATA Data)
         return MmGetSystemAddressForMdlSafe(Data->Iopb->Parameters.Read.MdlAddress, NormalPagePriority);
     return NULL; // READ는 Post에서 보통 MDL이 잡혀있음
 }
+
 static VOID DumpString(_In_reads_bytes_(len) const UCHAR* p, _In_ ULONG len, _In_ ULONG max)
 {
     ULONG n = (len < max ? len : max);
@@ -689,6 +649,28 @@ IsNpfsVolume(_In_ PFLT_VOLUME Volume)
     return (fsType == FLT_FSTYPE_NPFS);
 }
 
+EXTERN_C DECLSPEC_IMPORT
+UCHAR* PsGetProcessImageFileName(PEPROCESS Process);
+
+static __forceinline BOOLEAN IsPythonProc(_In_ PFLT_CALLBACK_DATA Data)
+{
+    PEPROCESS proc = FltGetRequestorProcess(Data);
+    if (!proc) return FALSE;
+
+    const UCHAR* img = PsGetProcessImageFileName(proc);
+    if (!img) return FALSE;
+
+    // PsGetProcessImageFileName → 항상 짧은 exe 이름만 반환 (예: "python.exe")
+	
+    if (_stricmp((const char*)img, "python.exe") == 0)
+    {
+        DbgPrint("[IsPython] Process Image: %s\n", img);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
 FLT_PREOP_CALLBACK_STATUS
 SpyPreOperationCallback(
     _Inout_ PFLT_CALLBACK_DATA Data,
@@ -706,31 +688,13 @@ SpyPreOperationCallback(
 
     const UCHAR mj = Data->Iopb->MajorFunction;
 
-    /*if (mj == IRP_MJ_CREATE || mj == IRP_MJ_CREATE_NAMED_PIPE) {
-        LogProc(Data, MjName(mj));
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    }*/
-
-    //if (mj == IRP_MJ_WRITE) {
-    //    ULONG len = Data->Iopb->Parameters.Write.Length;
-
-    //    if (len == 0 ||
-    //        FlagOn(Data->Iopb->IrpFlags, IRP_PAGING_IO) ||
-    //        Data->RequestorMode == KernelMode) {
-    //        return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    //    }
-
-    //    PVOID sys = GetSysBufFromWrite(Data);
-    //    LogProc(Data, "WRITE");
-    //    if (sys && len) {
-    //        DbgPrint("[NPFS][WRITE] len=%lu first=%02X\n", len, ((PUCHAR)sys)[0]);
-    //        DumpBytess((const UCHAR*)sys, len, 256); // 과도 로그 방지로 256바이트 제한
-    //    }
-    //    return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    //}
-
 
     if (mj == IRP_MJ_WRITE) {
+        if (!IsPythonProc(Data)) {
+            // python.exe가 아니면 무시
+            return FLT_POSTOP_FINISHED_PROCESSING;
+        }
+
         ULONG len = Data->Iopb->Parameters.Write.Length;
 
         // 커널 모드 요청, 페이징 I/O, 길이가 0인 요청은 무시
@@ -740,17 +704,114 @@ SpyPreOperationCallback(
             return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
 
-        // Post-Operation 콜백을 요청합니다.
+        
+        if (!FlagOn(Data->Flags, FLTFL_CALLBACK_DATA_SYSTEM_BUFFER) &&
+            Data->Iopb->Parameters.Write.MdlAddress == NULL) {
+            FltLockUserBuffer(Data); // 실패해도 크래시 아님; Post에서 대안 처리
+        }
+
         return FLT_PREOP_SUCCESS_WITH_CALLBACK;
     }
 
-    /*if (mj == IRP_MJ_CLEANUP || mj == IRP_MJ_CLOSE) {
-        LogProc(Data, MjName(mj));
-    }*/
 
-    // NPFS 전용 처리…
-	//DbgPrint("NPFS operation detected: MajorFunction=%d\n", Data->Iopb->MajorFunction);
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
+}
+
+
+#define LOG_PREVIEW_MAX  512
+
+typedef struct _BUF_VIEW {
+    PUCHAR  Ptr;
+    ULONG   Size;
+    BOOLEAN NeedFree;
+} BUF_VIEW;
+
+__forceinline VOID ReleaseBufView(_Inout_ BUF_VIEW* v)
+{
+    if (v->NeedFree && v->Ptr) ExFreePoolWithTag(v->Ptr, 'gnPN');
+    v->Ptr = NULL; v->Size = 0; v->NeedFree = FALSE;
+}
+
+// WRITE 경로용: SystemBuffer → MDL → (없으면) Probe + 임시복사
+__forceinline VOID AcquireWriteView(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_    ULONG wantBytes,
+    _Out_   BUF_VIEW* out
+) {
+    RtlZeroMemory(out, sizeof(*out));
+
+    // 1) SystemBuffer
+    if (FlagOn(Data->Flags, FLTFL_CALLBACK_DATA_SYSTEM_BUFFER)) {
+        out->Ptr = (PUCHAR)Data->Iopb->Parameters.Write.WriteBuffer;
+        out->Size = wantBytes;
+        return;
+    }
+    // 2) MDL
+    if (Data->Iopb->Parameters.Write.MdlAddress) {
+        PUCHAR p = (PUCHAR)MmGetSystemAddressForMdlSafe(
+            Data->Iopb->Parameters.Write.MdlAddress, NormalPagePriority);
+        if (p) {
+            out->Ptr = p;
+            out->Size = wantBytes;
+            return;
+        }
+    }
+    // 3) 유저 버퍼 → PASSIVE에서 안전 복사(미리보기 길이만)
+    __try {
+        ProbeForRead(Data->Iopb->Parameters.Write.WriteBuffer, wantBytes, 1);
+        PUCHAR tmp = (PUCHAR)ExAllocatePoolWithTag(NonPagedPoolNx, wantBytes, 'gnPN');
+        if (tmp) {
+            RtlCopyMemory(tmp, Data->Iopb->Parameters.Write.WriteBuffer, wantBytes);
+            out->Ptr = tmp; out->Size = wantBytes; out->NeedFree = TRUE;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        out->Ptr = NULL; out->Size = 0; out->NeedFree = FALSE;
+    }
+}
+
+
+
+static FLT_POSTOP_CALLBACK_STATUS
+PostWrite_WhenSafe(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_    PCFLT_RELATED_OBJECTS FltObjects,
+    _In_opt_ PVOID CompletionContext,
+    _In_    FLT_POST_OPERATION_FLAGS Flags
+) {
+    UNREFERENCED_PARAMETER(CompletionContext);
+    UNREFERENCED_PARAMETER(Flags);
+
+    if (!NT_SUCCESS(Data->IoStatus.Status))
+    {
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+
+    ULONG wrote = (ULONG)Data->IoStatus.Information;
+    if (wrote == 0)
+    {
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+
+    UNICODE_STRING name = FltObjects->FileObject->FileName;
+
+    // 미리보기 길이 제한
+    ULONG want = (wrote < LOG_PREVIEW_MAX) ? wrote : LOG_PREVIEW_MAX;
+
+    BUF_VIEW v;
+    AcquireWriteView(Data, want, &v);
+
+    LogProc(Data, "WRITE (PostOp)");
+    DbgPrint("[NPFS][WRITE-POST] pipename=%wZ len=%lu%s\n",
+        name, wrote, v.Ptr ? "" : " (no-buf)");
+
+    if (v.Ptr && want) {
+        DbgPrint("[NPFS][STR] preview=%luB first=%02X\n", want, v.Ptr[0]);
+        DumpString((const UCHAR*)v.Ptr, want, LOG_PREVIEW_MAX);
+    }
+
+    ReleaseBufView(&v);
+    return FLT_POSTOP_FINISHED_PROCESSING;
 }
 
 
@@ -767,48 +828,52 @@ SpyPostOperationCallback (
     UNREFERENCED_PARAMETER(Flags);
 
     // 작업이 성공적으로 완료되었는지 확인
-    if (!NT_SUCCESS(Data->IoStatus.Status)) {
+    if (!NT_SUCCESS(Data->IoStatus.Status)) 
+    {
         return FLT_POSTOP_FINISHED_PROCESSING;
     }
 
     const UCHAR mj = Data->Iopb->MajorFunction;
+    //UNICODE_STRING name = FltObjects->FileObject->FileName;
 
-    if (mj == IRP_MJ_WRITE) {
-        ULONG writeLength = (ULONG)Data->IoStatus.Information; // 실제 쓰여진 길이
+    
+
+    if (mj == IRP_MJ_WRITE) 
+    {
+        /* 방법 1 */
+        /* ULONG writeLength = (ULONG)Data->IoStatus.Information; // 실제 쓰여진 길이
         PVOID sysBuffer = NULL;
 
         if (writeLength == 0) {
             return FLT_POSTOP_FINISHED_PROCESSING;
         }
 
-        // Post-Op에서는 버퍼에 안전하게 접근할 수 있습니다.
-        // GetSysBufFromWrite와 같은 불안정한 함수 대신,
-        // 이미 시스템 버퍼에 있거나 MDL이 준비되어 있을 가능성이 높습니다.
-
-        //    ULONG len = Data->Iopb->Parameters.Write.Length;
-
-        
-
-        //    PVOID sys = GetSysBufFromWrite(Data);
-        //    LogProc(Data, "WRITE");
-        //    if (sys && len) {
-        //        DbgPrint("[NPFS][WRITE] len=%lu first=%02X\n", len, ((PUCHAR)sys)[0]);
-        //        DumpBytess((const UCHAR*)sys, len, 256); // 과도 로그 방지로 256바이트 제한
-        //    }
-
-
         sysBuffer = GetSysBufFromWrite(Data);
 
-        
+
         LogProc(Data, "WRITE (PostOp)");
         if (sysBuffer && writeLength > 0) {
-            UNICODE_STRING name = FltObjects->FileObject->FileName;
+
             DbgPrint("[NPFS][WRITE-POST] pipename=%wZ len=%lu first=%02X\n",name, writeLength, ((PUCHAR)sysBuffer)[0]);
             DumpString((const UCHAR*)sysBuffer, writeLength, 256);
         }
     }
 
+    return FLT_POSTOP_FINISHED_PROCESSING; */
+
+    FLT_POSTOP_CALLBACK_STATUS safeStatus = FLT_POSTOP_FINISHED_PROCESSING;
+    /* 방법 2 : when-safe 함수 */
+        if (FltDoCompletionProcessingWhenSafe(
+            Data, FltObjects, CompletionContext, Flags,
+            PostWrite_WhenSafe,  // 아래 함수
+            &safeStatus
+        ))
+        {
+            return safeStatus;
+    }
+    }
     return FLT_POSTOP_FINISHED_PROCESSING;
+
 }
 
 
